@@ -1,4 +1,4 @@
-// SyncWatch - Collaborative Video Streaming Application
+// SyncWatch - Collaborative Video Streaming Application with YouTube Support
 class SyncWatch {
     constructor() {
         this.currentUser = null;
@@ -14,6 +14,14 @@ class SyncWatch {
         this.typingTimeout = null;
         this.initialized = false;
         
+        // Video player state
+        this.currentPlayerType = 'html5'; // 'html5', 'youtube', 'vimeo'
+        this.youtubePlayer = null;
+        this.youtubeReady = false;
+        this.youtubeAPIReady = false;
+        this.pendingYouTubeVideoId = null;
+        this.currentVideoUrl = '';
+        
         // Configuration
         this.config = {
             iceServers: [
@@ -22,7 +30,48 @@ class SyncWatch {
             ],
             maxParticipants: 4,
             syncInterval: 5000,
-            messageLimit: 100
+            messageLimit: 100,
+            youtube: {
+                apiUrl: 'https://www.youtube.com/iframe_api',
+                playerVars: {
+                    autoplay: 0,
+                    controls: 0,
+                    disablekb: 1,
+                    enablejsapi: 1,
+                    fs: 1,
+                    playsinline: 1,
+                    rel: 0,
+                    showinfo: 0,
+                    modestbranding: 1
+                }
+            }
+        };
+        
+        // URL patterns for different video sources
+        this.urlPatterns = {
+            youtube: [
+                /(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|m\.youtube\.com\/watch\?v=)([a-zA-Z0-9_-]{11})/,
+                /youtube\.com\/playlist\?list=([a-zA-Z0-9_-]+)/
+            ],
+            vimeo: [
+                /vimeo\.com\/(\d+)/,
+                /player\.vimeo\.com\/video\/(\d+)/
+            ],
+            direct: [
+                /\.(mp4|webm|ogg|mov|avi|mkv)(\?|$)/i,
+                /googleapis\.com.*\.(mp4|webm)/i,
+                /sample-videos\.com/i
+            ]
+        };
+        
+        // Error messages
+        this.errorMessages = {
+            youtube_load_failed: "Failed to load YouTube video. Please check the URL or try a different video.",
+            video_not_found: "Video not found or unavailable. Please check the URL.",
+            format_not_supported: "Video format not supported. Try YouTube, Vimeo, or direct video files (.mp4, .webm, etc.)",
+            network_error: "Network error occurred. Please check your connection and try again.",
+            sync_failed: "Synchronization failed. Attempting to reconnect...",
+            youtube_api_failed: "Failed to load YouTube player. Please refresh and try again."
         };
     }
     
@@ -38,9 +87,397 @@ class SyncWatch {
         
         this.showRoomModal();
         this.loadSampleVideo();
+        this.loadYouTubeAPI();
         this.initialized = true;
         
         console.log('SyncWatch initialized successfully');
+    }
+    
+    loadYouTubeAPI() {
+        // Check if YouTube API is already loaded
+        if (window.YT && window.YT.Player) {
+            console.log('YouTube API already loaded');
+            this.youtubeAPIReady = true;
+            return;
+        }
+        
+        // Avoid loading multiple times
+        if (window.onYouTubeIframeAPIReady) {
+            console.log('YouTube API already loading');
+            return;
+        }
+        
+        console.log('Loading YouTube IFrame API...');
+        
+        // Set global callback first
+        window.onYouTubeIframeAPIReady = () => {
+            console.log('YouTube IFrame API ready');
+            this.youtubeAPIReady = true;
+            
+            // If we have a pending video ID, load it now
+            if (this.pendingYouTubeVideoId) {
+                this.createYouTubePlayer(this.pendingYouTubeVideoId);
+                this.pendingYouTubeVideoId = null;
+            }
+        };
+        
+        // Create script tag to load YouTube API
+        const script = document.createElement('script');
+        script.src = this.config.youtube.apiUrl;
+        script.async = true;
+        script.onerror = () => {
+            console.error('Failed to load YouTube API');
+            this.showNotification('Failed to load YouTube API. Some features may not work.', 'warning');
+        };
+        
+        document.head.appendChild(script);
+    }
+    
+    detectVideoType(url) {
+        console.log('Detecting video type for URL:', url);
+        
+        // Test YouTube patterns
+        for (const pattern of this.urlPatterns.youtube) {
+            const match = url.match(pattern);
+            if (match) {
+                console.log('Detected YouTube video:', match[1]);
+                return { type: 'youtube', id: match[1] };
+            }
+        }
+        
+        // Test Vimeo patterns
+        for (const pattern of this.urlPatterns.vimeo) {
+            const match = url.match(pattern);
+            if (match) {
+                console.log('Detected Vimeo video:', match[1]);
+                return { type: 'vimeo', id: match[1] };
+            }
+        }
+        
+        // Test direct video patterns
+        for (const pattern of this.urlPatterns.direct) {
+            if (pattern.test(url)) {
+                console.log('Detected direct video');
+                return { type: 'direct', url: url };
+            }
+        }
+        
+        // Default to direct if it looks like a valid URL
+        try {
+            const urlObj = new URL(url);
+            if (urlObj.protocol === 'http:' || urlObj.protocol === 'https:') {
+                console.log('Defaulting to direct video');
+                return { type: 'direct', url: url };
+            }
+        } catch (e) {
+            console.error('Invalid URL:', e);
+        }
+        
+        return null;
+    }
+    
+    createYouTubePlayer(videoId) {
+        console.log('Creating YouTube player for video:', videoId);
+        
+        if (!this.youtubeAPIReady) {
+            console.log('YouTube API not ready, queuing video:', videoId);
+            this.pendingYouTubeVideoId = videoId;
+            return;
+        }
+        
+        const container = document.getElementById('youtubePlayer');
+        if (!container) {
+            console.error('YouTube player container not found');
+            return;
+        }
+        
+        // Clear any existing player
+        container.innerHTML = '';
+        
+        try {
+            this.youtubePlayer = new YT.Player(container, {
+                height: '100%',
+                width: '100%',
+                videoId: videoId,
+                playerVars: this.config.youtube.playerVars,
+                events: {
+                    'onReady': (event) => this.onYouTubePlayerReady(event),
+                    'onStateChange': (event) => this.onYouTubePlayerStateChange(event),
+                    'onError': (event) => this.onYouTubePlayerError(event)
+                }
+            });
+            
+            console.log('YouTube player created successfully');
+        } catch (error) {
+            console.error('Error creating YouTube player:', error);
+            this.showError(this.errorMessages.youtube_api_failed);
+        }
+    }
+    
+    onYouTubePlayerReady(event) {
+        console.log('YouTube player ready');
+        this.youtubeReady = true;
+        this.hideLoadingIndicator();
+        this.updateVideoSourceIndicator('YouTube');
+        
+        // Set initial volume
+        const volumeBar = document.getElementById('volumeBar');
+        if (volumeBar && this.youtubePlayer) {
+            this.youtubePlayer.setVolume(volumeBar.value);
+        }
+        
+        this.showNotification('YouTube video loaded successfully!', 'success');
+        this.hideError();
+    }
+    
+    onYouTubePlayerStateChange(event) {
+        const state = event.data;
+        console.log('YouTube player state changed:', state);
+        
+        switch (state) {
+            case YT.PlayerState.PLAYING:
+                this.onVideoPlay();
+                if (this.isVideoMaster) {
+                    this.broadcastVideoUpdate('play', { 
+                        currentTime: this.youtubePlayer.getCurrentTime() 
+                    });
+                }
+                break;
+            case YT.PlayerState.PAUSED:
+                this.onVideoPause();
+                if (this.isVideoMaster) {
+                    this.broadcastVideoUpdate('pause', { 
+                        currentTime: this.youtubePlayer.getCurrentTime()
+                    });
+                }
+                break;
+            case YT.PlayerState.ENDED:
+                this.onVideoEnd();
+                if (this.isVideoMaster) {
+                    this.broadcastVideoUpdate('end', { currentTime: 0 });
+                }
+                break;
+            case YT.PlayerState.BUFFERING:
+                this.showSyncIndicator('Buffering...');
+                break;
+        }
+        
+        // Update progress bar
+        this.updateProgress();
+    }
+    
+    onYouTubePlayerError(event) {
+        console.error('YouTube player error:', event.data);
+        let errorMessage = this.errorMessages.youtube_load_failed;
+        
+        switch (event.data) {
+            case 2:
+                errorMessage = 'Invalid YouTube video ID. Please check the URL.';
+                break;
+            case 5:
+                errorMessage = 'YouTube video cannot be played in HTML5 player.';
+                break;
+            case 100:
+                errorMessage = 'YouTube video not found or private.';
+                break;
+            case 101:
+            case 150:
+                errorMessage = 'YouTube video embedding disabled by owner.';
+                break;
+        }
+        
+        this.showError(errorMessage);
+    }
+    
+    switchToPlayer(playerType) {
+        console.log('Switching to player type:', playerType);
+        
+        // Hide all players
+        const htmlVideo = document.getElementById('mainVideo');
+        const youtubeContainer = document.getElementById('youtubePlayer');
+        const vimeoPlayer = document.getElementById('vimeoPlayer');
+        
+        if (htmlVideo) htmlVideo.classList.add('hidden');
+        if (youtubeContainer) youtubeContainer.classList.add('hidden');
+        if (vimeoPlayer) vimeoPlayer.classList.add('hidden');
+        
+        // Show the selected player
+        switch (playerType) {
+            case 'html5':
+                if (htmlVideo) htmlVideo.classList.remove('hidden');
+                break;
+            case 'youtube':
+                if (youtubeContainer) youtubeContainer.classList.remove('hidden');
+                break;
+            case 'vimeo':
+                if (vimeoPlayer) vimeoPlayer.classList.remove('hidden');
+                break;
+        }
+        
+        this.currentPlayerType = playerType;
+        this.updateVideoControls();
+    }
+    
+    getCurrentTime() {
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                return video ? video.currentTime || 0 : 0;
+            case 'youtube':
+                return this.youtubePlayer && this.youtubeReady ? 
+                       (this.youtubePlayer.getCurrentTime() || 0) : 0;
+            case 'vimeo':
+                return 0;
+            default:
+                return 0;
+        }
+    }
+    
+    getDuration() {
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                return video ? video.duration || 0 : 0;
+            case 'youtube':
+                return this.youtubePlayer && this.youtubeReady ? 
+                       (this.youtubePlayer.getDuration() || 0) : 0;
+            case 'vimeo':
+                return 0;
+            default:
+                return 0;
+        }
+    }
+    
+    isPlaying() {
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                return video ? !video.paused : false;
+            case 'youtube':
+                return this.youtubePlayer && this.youtubeReady ? 
+                       this.youtubePlayer.getPlayerState() === YT.PlayerState.PLAYING : false;
+            case 'vimeo':
+                return false;
+            default:
+                return false;
+        }
+    }
+    
+    play() {
+        console.log('Playing video with player type:', this.currentPlayerType);
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                if (video && video.src && !video.src.endsWith('/')) {
+                    video.play().catch(err => {
+                        console.error('Error playing HTML5 video:', err);
+                        this.showNotification('Cannot play video', 'error');
+                    });
+                }
+                break;
+            case 'youtube':
+                if (this.youtubePlayer && this.youtubeReady) {
+                    this.youtubePlayer.playVideo();
+                }
+                break;
+            case 'vimeo':
+                break;
+        }
+    }
+    
+    pause() {
+        console.log('Pausing video with player type:', this.currentPlayerType);
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                if (video) video.pause();
+                break;
+            case 'youtube':
+                if (this.youtubePlayer && this.youtubeReady) {
+                    this.youtubePlayer.pauseVideo();
+                }
+                break;
+            case 'vimeo':
+                break;
+        }
+    }
+    
+    seekTo(time) {
+        console.log('Seeking to time:', time, 'with player type:', this.currentPlayerType);
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                if (video && video.duration) {
+                    video.currentTime = Math.max(0, Math.min(time, video.duration));
+                }
+                break;
+            case 'youtube':
+                if (this.youtubePlayer && this.youtubeReady) {
+                    this.youtubePlayer.seekTo(time, true);
+                }
+                break;
+            case 'vimeo':
+                break;
+        }
+    }
+    
+    setVolume(volume) {
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                if (video) video.volume = Math.max(0, Math.min(volume / 100, 1));
+                break;
+            case 'youtube':
+                if (this.youtubePlayer && this.youtubeReady) {
+                    this.youtubePlayer.setVolume(Math.max(0, Math.min(volume, 100)));
+                }
+                break;
+            case 'vimeo':
+                break;
+        }
+    }
+    
+    showLoadingIndicator() {
+        const indicator = document.getElementById('videoLoadingIndicator');
+        if (indicator) {
+            indicator.classList.remove('hidden');
+        }
+    }
+    
+    hideLoadingIndicator() {
+        const indicator = document.getElementById('videoLoadingIndicator');
+        if (indicator) {
+            indicator.classList.add('hidden');
+        }
+    }
+    
+    updateVideoSourceIndicator(type) {
+        const indicator = document.getElementById('videoSourceType');
+        if (indicator) {
+            indicator.textContent = type;
+            indicator.className = 'status status--success';
+        }
+    }
+    
+    showError(message) {
+        console.error('Showing error:', message);
+        const errorEl = document.getElementById('videoError');
+        const messageEl = document.getElementById('errorMessage');
+        
+        if (errorEl && messageEl) {
+            messageEl.textContent = message;
+            errorEl.classList.remove('hidden');
+        }
+        
+        this.hideLoadingIndicator();
+        this.showNotification(message, 'error');
+    }
+    
+    hideError() {
+        const errorEl = document.getElementById('videoError');
+        if (errorEl) {
+            errorEl.classList.add('hidden');
+        }
     }
     
     bindEvents() {
@@ -54,7 +491,6 @@ class SyncWatch {
         if (joinBtn) {
             joinBtn.addEventListener('click', (e) => {
                 e.preventDefault();
-                console.log('Join room button clicked');
                 this.handleJoinRoom();
             });
         }
@@ -63,7 +499,6 @@ class SyncWatch {
             roomInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    console.log('Enter pressed in room input');
                     this.handleJoinRoom();
                 }
             });
@@ -73,7 +508,6 @@ class SyncWatch {
             usernameInput.addEventListener('keypress', (e) => {
                 if (e.key === 'Enter') {
                     e.preventDefault();
-                    console.log('Enter pressed in username input');
                     this.handleJoinRoom();
                 }
             });
@@ -100,6 +534,14 @@ class SyncWatch {
             muteBtn.addEventListener('click', () => this.toggleMute());
         }
         
+        const retryBtn = document.getElementById('retryVideoBtn');
+        if (retryBtn) {
+            retryBtn.addEventListener('click', () => {
+                this.hideError();
+                this.loadVideo();
+            });
+        }
+        
         // Progress and volume controls
         const progressBar = document.getElementById('progressBar');
         if (progressBar) {
@@ -108,7 +550,7 @@ class SyncWatch {
         
         const volumeBar = document.getElementById('volumeBar');
         if (volumeBar) {
-            volumeBar.addEventListener('input', (e) => this.setVolume(e.target.value));
+            volumeBar.addEventListener('input', (e) => this.setVolumeFromBar(e.target.value));
         }
         
         // Chat events
@@ -163,14 +605,33 @@ class SyncWatch {
             copyBtn.addEventListener('click', () => this.copyRoomLink());
         }
         
-        // Video events
+        // Video events for HTML5 player
         const video = document.getElementById('mainVideo');
         if (video) {
-            video.addEventListener('loadedmetadata', () => this.updateVideoControls());
+            video.addEventListener('loadedmetadata', () => {
+                console.log('HTML5 video metadata loaded');
+                this.updateVideoControls();
+                this.hideLoadingIndicator();
+                this.hideError();
+            });
             video.addEventListener('timeupdate', () => this.updateProgress());
             video.addEventListener('play', () => this.onVideoPlay());
             video.addEventListener('pause', () => this.onVideoPause());
             video.addEventListener('ended', () => this.onVideoEnd());
+            video.addEventListener('error', (e) => {
+                console.error('HTML5 video error:', e);
+                this.showError('Failed to load video. Please check the URL or try a different format.');
+            });
+            video.addEventListener('loadstart', () => {
+                console.log('HTML5 video load started');
+                this.showLoadingIndicator();
+            });
+            video.addEventListener('canplay', () => {
+                console.log('HTML5 video can play');
+                this.hideLoadingIndicator();
+                this.hideError();
+                this.showNotification('Video loaded successfully!', 'success');
+            });
         }
         
         // Keyboard shortcuts
@@ -219,8 +680,6 @@ class SyncWatch {
         const username = usernameInput.value.trim();
         const roomCode = roomInput.value.trim();
         
-        console.log('Username:', username, 'Room code:', roomCode);
-        
         if (!username) {
             this.showNotification('Please enter a username', 'error');
             usernameInput.focus();
@@ -237,8 +696,6 @@ class SyncWatch {
             username: username,
             joinedAt: Date.now()
         };
-        
-        console.log('Current user created:', this.currentUser);
         
         if (roomCode) {
             this.joinRoom(roomCode);
@@ -258,7 +715,6 @@ class SyncWatch {
             app.classList.remove('hidden');
         }
         
-        // Initialize UI after showing app
         setTimeout(() => {
             this.initializeApp();
         }, 200);
@@ -271,14 +727,12 @@ class SyncWatch {
         this.startSyncLoop();
         this.updateUsersDisplay();
         
-        // Add welcome message to chat
-        this.addSystemMessage(`Welcome to the room, ${this.currentUser.username}!`);
+        this.addSystemMessage(`Welcome to SyncWatch, ${this.currentUser.username}! You can now watch YouTube, Vimeo, and direct video files together.`);
         
         // Set initial volume
-        const video = document.getElementById('mainVideo');
         const volumeBar = document.getElementById('volumeBar');
-        if (video && volumeBar) {
-            video.volume = volumeBar.value / 100;
+        if (volumeBar) {
+            this.setVolumeFromBar(volumeBar.value);
         }
         
         console.log('Main app initialized successfully');
@@ -297,13 +751,14 @@ class SyncWatch {
                 url: '',
                 currentTime: 0,
                 playing: false,
-                lastUpdate: Date.now()
+                lastUpdate: Date.now(),
+                playerType: 'html5'
             }
         };
         
         // Set default video URL
         const video = document.getElementById('mainVideo');
-        if (video && video.src) {
+        if (video && video.src && !video.src.endsWith('/')) {
             this.currentRoom.videoState.url = video.src;
         }
         
@@ -330,7 +785,6 @@ class SyncWatch {
             return;
         }
         
-        // Check if username is already taken
         if (room.users.some(user => user.username === this.currentUser.username)) {
             this.showNotification('Username already taken in this room. Please choose a different name.', 'error');
             this.showRoomModal();
@@ -344,9 +798,6 @@ class SyncWatch {
         this.showNotification('Joined room successfully!', 'success');
         this.updateConnectionStatus('Connected');
         
-        console.log('Successfully joined room:', this.currentRoom);
-        
-        // Sync with room state
         setTimeout(() => {
             this.syncWithRoom();
             this.loadExistingMessages();
@@ -356,17 +807,13 @@ class SyncWatch {
     loadExistingMessages() {
         if (!this.currentRoom || !this.currentRoom.messages) return;
         
-        console.log('Loading existing messages:', this.currentRoom.messages.length);
-        
         const chatMessages = document.getElementById('chatMessages');
         if (!chatMessages) return;
         
-        // Clear existing messages except system messages
         const systemMessages = Array.from(chatMessages.querySelectorAll('.system-message'));
         chatMessages.innerHTML = '';
         systemMessages.forEach(msg => chatMessages.appendChild(msg));
         
-        // Add room messages
         this.currentRoom.messages.forEach(message => {
             this.addMessageToChat(message);
         });
@@ -383,32 +830,125 @@ class SyncWatch {
             return;
         }
         
-        if (!this.isValidVideoUrl(url)) {
-            this.showNotification('Please enter a valid video URL (MP4, WebM, or streaming service)', 'error');
+        console.log('Loading video URL:', url);
+        
+        this.hideError();
+        this.showLoadingIndicator();
+        this.currentVideoUrl = url;
+        
+        const videoInfo = this.detectVideoType(url);
+        if (!videoInfo) {
+            this.showError(this.errorMessages.format_not_supported);
             return;
         }
+        
+        console.log('Detected video info:', videoInfo);
+        
+        switch (videoInfo.type) {
+            case 'youtube':
+                this.loadYouTubeVideo(videoInfo.id, url);
+                break;
+            case 'vimeo':
+                this.loadVimeoVideo(videoInfo.id, url);
+                break;
+            case 'direct':
+                this.loadDirectVideo(videoInfo.url);
+                break;
+        }
+    }
+    
+    loadYouTubeVideo(videoId, originalUrl) {
+        console.log('Loading YouTube video:', videoId);
+        
+        this.switchToPlayer('youtube');
+        this.updateVideoSourceIndicator('YouTube');
+        
+        if (!this.youtubeAPIReady) {
+            console.log('YouTube API not ready, queuing video');
+            this.pendingYouTubeVideoId = videoId;
+            this.showSyncIndicator('Loading YouTube API...');
+            return;
+        }
+        
+        this.createYouTubePlayer(videoId);
+        
+        // Update room state
+        if (this.currentRoom) {
+            this.currentRoom.videoState.url = originalUrl;
+            this.currentRoom.videoState.currentTime = 0;
+            this.currentRoom.videoState.playing = false;
+            this.currentRoom.videoState.playerType = 'youtube';
+            this.currentRoom.videoState.lastUpdate = Date.now();
+            this.saveRoomToStorage();
+            
+            this.broadcastVideoUpdate('load', { 
+                url: originalUrl, 
+                currentTime: 0, 
+                playerType: 'youtube' 
+            });
+            this.addSystemMessage(`${this.currentUser.username} loaded a YouTube video`);
+        }
+    }
+    
+    loadVimeoVideo(videoId, originalUrl) {
+        console.log('Loading Vimeo video:', videoId);
+        
+        this.switchToPlayer('vimeo');
+        this.updateVideoSourceIndicator('Vimeo');
+        
+        const vimeoPlayer = document.getElementById('vimeoPlayer');
+        if (vimeoPlayer) {
+            vimeoPlayer.src = `https://player.vimeo.com/video/${videoId}?autoplay=0&controls=0`;
+        }
+        
+        this.hideLoadingIndicator();
+        this.showNotification('Vimeo video loaded! (Basic support)', 'success');
+        
+        // Update room state
+        if (this.currentRoom) {
+            this.currentRoom.videoState.url = originalUrl;
+            this.currentRoom.videoState.currentTime = 0;
+            this.currentRoom.videoState.playing = false;
+            this.currentRoom.videoState.playerType = 'vimeo';
+            this.currentRoom.videoState.lastUpdate = Date.now();
+            this.saveRoomToStorage();
+            
+            this.broadcastVideoUpdate('load', { 
+                url: originalUrl, 
+                currentTime: 0, 
+                playerType: 'vimeo' 
+            });
+            this.addSystemMessage(`${this.currentUser.username} loaded a Vimeo video`);
+        }
+    }
+    
+    loadDirectVideo(url) {
+        console.log('Loading direct video:', url);
+        
+        this.switchToPlayer('html5');
+        this.updateVideoSourceIndicator('Direct Video');
         
         const video = document.getElementById('mainVideo');
         if (!video) return;
         
-        // Show loading state
-        this.showSyncIndicator('Loading video...');
-        
+        // Set up event handlers for this specific load
         const handleLoad = () => {
+            console.log('Direct video loaded successfully');
+            this.hideLoadingIndicator();
             this.showNotification('Video loaded successfully!', 'success');
-            this.hideSyncIndicator();
-            video.removeEventListener('loadeddata', handleLoad);
+            this.hideError();
+            video.removeEventListener('canplay', handleLoad);
             video.removeEventListener('error', handleError);
         };
         
-        const handleError = () => {
-            this.showNotification('Failed to load video. Please check the URL.', 'error');
-            this.hideSyncIndicator();
-            video.removeEventListener('loadeddata', handleLoad);
+        const handleError = (e) => {
+            console.error('Direct video load error:', e);
+            this.showError('Failed to load video. Please check the URL or try a different format.');
+            video.removeEventListener('canplay', handleLoad);
             video.removeEventListener('error', handleError);
         };
         
-        video.addEventListener('loadeddata', handleLoad);
+        video.addEventListener('canplay', handleLoad);
         video.addEventListener('error', handleError);
         
         video.src = url;
@@ -419,15 +959,17 @@ class SyncWatch {
             this.currentRoom.videoState.url = url;
             this.currentRoom.videoState.currentTime = 0;
             this.currentRoom.videoState.playing = false;
+            this.currentRoom.videoState.playerType = 'html5';
             this.currentRoom.videoState.lastUpdate = Date.now();
             this.saveRoomToStorage();
             
-            // Broadcast to other users
-            this.broadcastVideoUpdate('load', { url, currentTime: 0 });
+            this.broadcastVideoUpdate('load', { 
+                url: url, 
+                currentTime: 0, 
+                playerType: 'html5' 
+            });
             this.addSystemMessage(`${this.currentUser.username} loaded a new video`);
         }
-        
-        console.log('Loading video:', url);
     }
     
     loadSampleVideo() {
@@ -440,36 +982,49 @@ class SyncWatch {
         }
         
         if (video) {
-            video.src = sampleUrl;
-            video.load();
+            // Don't auto-load the sample, just set the placeholder
+            // video.src = sampleUrl;
+            // video.load();
         }
         
-        console.log('Sample video loaded');
+        this.updateVideoSourceIndicator('Direct Video');
+        console.log('Sample video URL set');
     }
     
     togglePlayPause() {
-        const video = document.getElementById('mainVideo');
-        if (!video) return;
-        
-        if (!video.src) {
+        if (!this.hasValidVideo()) {
             this.showNotification('Please load a video first', 'error');
             return;
         }
         
-        if (video.paused) {
-            video.play().then(() => {
-                this.broadcastVideoUpdate('play', { currentTime: video.currentTime });
-            }).catch(err => {
-                console.error('Error playing video:', err);
-                this.showNotification('Cannot play video', 'error');
-            });
-        } else {
-            video.pause();
-            this.broadcastVideoUpdate('pause', { currentTime: video.currentTime });
-        }
         this.isVideoMaster = true;
         
-        console.log('Video play/pause toggled');
+        if (this.isPlaying()) {
+            this.pause();
+            this.broadcastVideoUpdate('pause', { 
+                currentTime: this.getCurrentTime() 
+            });
+        } else {
+            this.play();
+            this.broadcastVideoUpdate('play', { 
+                currentTime: this.getCurrentTime() 
+            });
+        }
+    }
+    
+    hasValidVideo() {
+        switch (this.currentPlayerType) {
+            case 'html5':
+                const video = document.getElementById('mainVideo');
+                return video && video.src && !video.src.endsWith('/');
+            case 'youtube':
+                return this.youtubePlayer && this.youtubeReady;
+            case 'vimeo':
+                const vimeoPlayer = document.getElementById('vimeoPlayer');
+                return vimeoPlayer && vimeoPlayer.src;
+            default:
+                return false;
+        }
     }
     
     onVideoPlay() {
@@ -480,10 +1035,7 @@ class SyncWatch {
         
         if (this.currentRoom) {
             this.currentRoom.videoState.playing = true;
-            const video = document.getElementById('mainVideo');
-            if (video) {
-                this.currentRoom.videoState.currentTime = video.currentTime;
-            }
+            this.currentRoom.videoState.currentTime = this.getCurrentTime();
             this.currentRoom.videoState.lastUpdate = Date.now();
             this.saveRoomToStorage();
         }
@@ -497,10 +1049,7 @@ class SyncWatch {
         
         if (this.currentRoom) {
             this.currentRoom.videoState.playing = false;
-            const video = document.getElementById('mainVideo');
-            if (video) {
-                this.currentRoom.videoState.currentTime = video.currentTime;
-            }
+            this.currentRoom.videoState.currentTime = this.getCurrentTime();
             this.currentRoom.videoState.lastUpdate = Date.now();
             this.saveRoomToStorage();
         }
@@ -514,41 +1063,39 @@ class SyncWatch {
     }
     
     seekVideo(value) {
-        const video = document.getElementById('mainVideo');
-        if (!video || !video.duration) return;
+        if (!this.hasValidVideo()) return;
         
-        const seekTime = (value / 100) * video.duration;
-        video.currentTime = seekTime;
+        const duration = this.getDuration();
+        if (!duration) return;
+        
+        const seekTime = (value / 100) * duration;
+        this.seekTo(seekTime);
         this.broadcastVideoUpdate('seek', { currentTime: seekTime });
         this.isVideoMaster = true;
     }
     
-    setVolume(value) {
-        const video = document.getElementById('mainVideo');
+    setVolumeFromBar(value) {
+        this.setVolume(value);
+        
         const muteBtn = document.getElementById('muteBtn');
-        
-        if (video) {
-            video.volume = value / 100;
-        }
-        
         if (muteBtn) {
             muteBtn.textContent = value == 0 ? '🔇' : '🔊';
         }
     }
     
     toggleMute() {
-        const video = document.getElementById('mainVideo');
         const volumeBar = document.getElementById('volumeBar');
         const muteBtn = document.getElementById('muteBtn');
         
-        if (!video || !volumeBar || !muteBtn) return;
+        if (!volumeBar || !muteBtn) return;
         
-        if (video.muted) {
-            video.muted = false;
+        if (volumeBar.value == 0) {
+            volumeBar.value = 50;
+            this.setVolume(50);
             muteBtn.textContent = '🔊';
-            video.volume = volumeBar.value / 100;
         } else {
-            video.muted = true;
+            volumeBar.value = 0;
+            this.setVolume(0);
             muteBtn.textContent = '🔇';
         }
     }
@@ -570,23 +1117,25 @@ class SyncWatch {
     }
     
     updateProgress() {
-        const video = document.getElementById('mainVideo');
         const progressBar = document.getElementById('progressBar');
         const timeDisplay = document.getElementById('timeDisplay');
         
-        if (!video || !progressBar || !timeDisplay) return;
+        if (!progressBar || !timeDisplay) return;
         
-        if (video.duration) {
-            const progress = (video.currentTime / video.duration) * 100;
+        const currentTime = this.getCurrentTime();
+        const duration = this.getDuration();
+        
+        if (duration && duration > 0) {
+            const progress = (currentTime / duration) * 100;
             progressBar.value = progress;
             
-            const currentTime = this.formatTime(video.currentTime);
-            const duration = this.formatTime(video.duration);
-            timeDisplay.textContent = `${currentTime} / ${duration}`;
+            const currentTimeStr = this.formatTime(currentTime);
+            const durationStr = this.formatTime(duration);
+            timeDisplay.textContent = `${currentTimeStr} / ${durationStr}`;
             
             // Update room state periodically
             if (this.currentRoom && Date.now() - this.lastSyncTime > 2000) {
-                this.currentRoom.videoState.currentTime = video.currentTime;
+                this.currentRoom.videoState.currentTime = currentTime;
                 this.lastSyncTime = Date.now();
             }
         }
@@ -600,6 +1149,7 @@ class SyncWatch {
         this.updateProgress();
     }
     
+    // Continue with rest of the methods from the original implementation...
     sendMessage() {
         const input = document.getElementById('chatInput');
         if (!input || !this.currentUser) return;
@@ -624,10 +1174,7 @@ class SyncWatch {
         this.addMessageToRoom(messageObj);
         input.value = '';
         
-        // Clear typing indicator
         this.hideTypingIndicator();
-        
-        console.log('Message sent:', messageObj);
     }
     
     handleTyping() {
@@ -635,10 +1182,8 @@ class SyncWatch {
             clearTimeout(this.typingTimeout);
         }
         
-        // Show typing indicator to other users (simulated for demo)
         this.showTypingIndicator(this.currentUser?.username || 'Someone');
         
-        // Clear typing indicator after 2 seconds of no typing
         this.typingTimeout = setTimeout(() => {
             this.hideTypingIndicator();
         }, 2000);
@@ -825,7 +1370,6 @@ class SyncWatch {
         chatMessages.appendChild(messageEl);
         chatMessages.scrollTop = chatMessages.scrollHeight;
         
-        // Limit message history
         while (chatMessages.children.length > this.config.messageLimit) {
             const firstChild = chatMessages.firstChild;
             if (firstChild && !firstChild.classList.contains('system-message')) {
@@ -944,32 +1488,60 @@ class SyncWatch {
     syncWithRoom() {
         if (!this.currentRoom) return;
         
-        const video = document.getElementById('mainVideo');
-        if (!video) return;
-        
         const videoState = this.currentRoom.videoState;
         
+        // Switch player type if needed
+        if (videoState.playerType && videoState.playerType !== this.currentPlayerType) {
+            this.switchToPlayer(videoState.playerType);
+        }
+        
         // Sync video URL
-        if (videoState.url && videoState.url !== video.src) {
+        if (videoState.url && videoState.url !== this.currentVideoUrl) {
             const urlInput = document.getElementById('videoUrlInput');
             if (urlInput) {
                 urlInput.value = videoState.url;
             }
-            video.src = videoState.url;
-            video.load();
+            
+            // Load the video if it's different from current
+            this.currentVideoUrl = videoState.url;
+            const videoInfo = this.detectVideoType(videoState.url);
+            if (videoInfo) {
+                switch (videoInfo.type) {
+                    case 'youtube':
+                        if (this.currentPlayerType === 'youtube') {
+                            this.loadYouTubeVideo(videoInfo.id, videoState.url);
+                        }
+                        break;
+                    case 'vimeo':
+                        if (this.currentPlayerType === 'vimeo') {
+                            this.loadVimeoVideo(videoInfo.id, videoState.url);
+                        }
+                        break;
+                    case 'direct':
+                        if (this.currentPlayerType === 'html5') {
+                            const video = document.getElementById('mainVideo');
+                            if (video && video.src !== videoState.url) {
+                                video.src = videoState.url;
+                                video.load();
+                            }
+                        }
+                        break;
+                }
+            }
         }
         
         // Sync playback time (allow 2-second tolerance)
-        if (video.duration && Math.abs(video.currentTime - videoState.currentTime) > 2) {
-            video.currentTime = videoState.currentTime;
+        const currentTime = this.getCurrentTime();
+        if (Math.abs(currentTime - videoState.currentTime) > 2 && this.hasValidVideo()) {
+            this.seekTo(videoState.currentTime);
             this.showSyncIndicator();
         }
         
         // Sync play/pause state
-        if (videoState.playing && video.paused && !this.isVideoMaster) {
-            video.play().catch(err => console.error('Sync play error:', err));
-        } else if (!videoState.playing && !video.paused && !this.isVideoMaster) {
-            video.pause();
+        if (videoState.playing && !this.isPlaying() && !this.isVideoMaster && this.hasValidVideo()) {
+            this.play();
+        } else if (!videoState.playing && this.isPlaying() && !this.isVideoMaster) {
+            this.pause();
         }
         
         // Reset master status after sync
@@ -979,10 +1551,9 @@ class SyncWatch {
     showSyncIndicator(message = 'Syncing...') {
         const indicator = document.getElementById('syncIndicator');
         if (indicator) {
-            indicator.textContent = message;
+            indicator.textContent = `🔄 ${message}`;
             indicator.classList.remove('hidden');
             
-            // Auto-hide after 2 seconds
             setTimeout(() => this.hideSyncIndicator(), 2000);
         }
     }
@@ -1073,7 +1644,6 @@ class SyncWatch {
     }
     
     fallbackCopyText(text) {
-        // Fallback for non-secure contexts
         const textArea = document.createElement('textarea');
         textArea.value = text;
         textArea.style.position = 'fixed';
@@ -1094,7 +1664,6 @@ class SyncWatch {
     }
     
     handleKeyboardShortcuts(e) {
-        // Don't trigger shortcuts when typing in inputs
         if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
         
         switch (e.code) {
@@ -1126,7 +1695,6 @@ class SyncWatch {
     
     handleStorageChange(e) {
         if (e.key && e.key.startsWith('syncwatch_room_')) {
-            // Room data updated by another user
             const roomCode = e.key.replace('syncwatch_room_', '');
             if (this.currentRoom && this.currentRoom.code === roomCode && e.newValue) {
                 const newRoomData = JSON.parse(e.newValue);
@@ -1137,7 +1705,6 @@ class SyncWatch {
                 this.updateUI();
                 this.updateUsersDisplay();
                 
-                // Check for new messages
                 if (newRoomData.messages && newRoomData.messages.length > oldMessageCount) {
                     this.loadNewMessages();
                 }
@@ -1173,7 +1740,6 @@ class SyncWatch {
         
         this.currentRoom.messages.push(messageObj);
         
-        // Limit message history
         if (this.currentRoom.messages.length > this.config.messageLimit) {
             this.currentRoom.messages = this.currentRoom.messages.slice(-this.config.messageLimit);
         }
@@ -1204,6 +1770,14 @@ class SyncWatch {
     showNotification(message, type = 'info') {
         const notifications = document.getElementById('notifications');
         if (!notifications) return;
+        
+        // Remove any existing notifications of the same type
+        const existingNotifications = notifications.querySelectorAll(`.notification.${type}`);
+        existingNotifications.forEach(notification => {
+            if (notification.parentNode) {
+                notification.remove();
+            }
+        });
         
         const notification = document.createElement('div');
         notification.className = `notification ${type}`;
@@ -1239,7 +1813,6 @@ class SyncWatch {
             clearTimeout(this.typingTimeout);
         }
         
-        // Remove user from room
         if (this.currentRoom && this.currentUser) {
             this.currentRoom.users = this.currentRoom.users.filter(
                 user => user.id !== this.currentUser.id
@@ -1262,41 +1835,17 @@ class SyncWatch {
             return seconds.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         }
         
-        if (isNaN(seconds) || !isFinite(seconds)) return '0:00';
+        if (isNaN(seconds) || !isFinite(seconds) || seconds < 0) return '0:00';
         
         const mins = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60);
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     }
-    
-    isValidVideoUrl(url) {
-        try {
-            const urlObj = new URL(url);
-            const validExtensions = ['.mp4', '.webm', '.ogg', '.mov'];
-            const hasValidExtension = validExtensions.some(ext => 
-                urlObj.pathname.toLowerCase().includes(ext)
-            );
-            
-            const validDomains = [
-                'youtube.com', 'youtu.be', 'vimeo.com', 
-                'googleapis.com', 'cloudflare.com', 'sample-videos.com'
-            ];
-            
-            const hasValidDomain = validDomains.some(domain =>
-                urlObj.hostname.includes(domain)
-            );
-            
-            return hasValidExtension || hasValidDomain;
-        } catch {
-            return false;
-        }
-    }
 }
 
-// Initialize the application when DOM is loaded
+// Initialize the application
 let syncWatch = null;
 
-// Immediate initialization
 document.addEventListener('DOMContentLoaded', () => {
     console.log('DOM loaded, initializing SyncWatch...');
     syncWatch = new SyncWatch();
@@ -1313,12 +1862,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 });
 
-// Also try to initialize immediately if DOM is already loaded
 if (document.readyState !== 'loading') {
     console.log('DOM already loaded, initializing SyncWatch immediately...');
     syncWatch = new SyncWatch();
     syncWatch.init();
 }
 
-// Expose to global scope for HTML onclick handlers and debugging
+// Expose to global scope
 window.syncWatch = syncWatch;

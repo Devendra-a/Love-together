@@ -890,6 +890,24 @@ select.form-control {
   opacity: 0.7;
 }
 
+/* Video Source Indicator */
+.video-source-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+  justify-content: center;
+}
+
+.loading-indicator {
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.loading-indicator.hidden {
+  display: none;
+}
+
 .video-container {
   position: relative;
   flex: 1;
@@ -899,13 +917,87 @@ select.form-control {
   background: var(--color-black);
   border-radius: var(--radius-lg);
   overflow: hidden;
+  min-height: 400px;
 }
 
+/* HTML5 Video Player */
 .main-video {
   width: 100%;
   height: 100%;
-  max-height: calc(100vh - 200px);
+  max-height: calc(100vh - 250px);
   object-fit: contain;
+}
+
+.main-video.hidden {
+  display: none;
+}
+
+/* YouTube Player */
+.youtube-player {
+  width: 100%;
+  height: 100%;
+  max-height: calc(100vh - 250px);
+  min-height: 400px;
+}
+
+.youtube-player iframe {
+  width: 100%;
+  height: 100%;
+  border: none;
+}
+
+.youtube-player.hidden {
+  display: none;
+}
+
+/* Vimeo Player */
+.vimeo-player {
+  width: 100%;
+  height: 100%;
+  max-height: calc(100vh - 250px);
+  min-height: 400px;
+}
+
+.vimeo-player.hidden {
+  display: none;
+}
+
+/* Video Error Display */
+.video-error {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.8);
+  color: var(--color-white);
+  z-index: 5;
+}
+
+.video-error.hidden {
+  display: none;
+}
+
+.error-content {
+  text-align: center;
+  padding: var(--space-32);
+  background: var(--color-surface);
+  border-radius: var(--radius-lg);
+  color: var(--color-text);
+  box-shadow: var(--shadow-lg);
+}
+
+.error-content h3 {
+  color: var(--color-error);
+  margin-bottom: var(--space-16);
+}
+
+.error-content p {
+  margin-bottom: var(--space-24);
+  color: var(--color-text-secondary);
 }
 
 /* Video Chat Overlay */
@@ -1316,6 +1408,31 @@ select.form-control:focus {
   }
 }
 
+/* Loading States */
+.loading {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* Player-specific loading states */
+.player-loading {
+  position: relative;
+}
+
+.player-loading::after {
+  content: "Loading...";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: rgba(0, 0, 0, 0.8);
+  color: var(--color-white);
+  padding: var(--space-16);
+  border-radius: var(--radius-base);
+  font-size: var(--font-size-sm);
+  z-index: 10;
+}
+
 /* Responsive Design */
 @media (max-width: 1024px) {
   .main-content {
@@ -1379,6 +1496,15 @@ select.form-control:focus {
     margin: var(--space-16);
     max-width: calc(100% - 32px);
   }
+  
+  .video-container {
+    min-height: 250px;
+  }
+  
+  .youtube-player,
+  .vimeo-player {
+    min-height: 250px;
+  }
 }
 
 /* Custom scrollbar */
@@ -1397,12 +1523,6 @@ select.form-control:focus {
 
 .chat-messages::-webkit-scrollbar-thumb:hover {
   background: var(--color-text-secondary);
-}
-
-/* Loading states */
-.loading {
-  opacity: 0.6;
-  pointer-events: none;
 }
 
 /* Focus styles for accessibility */

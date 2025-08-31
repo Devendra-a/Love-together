@@ -50,16 +50,29 @@
             <section class="video-section">
                 <!-- Video URL Input -->
                 <div class="video-url-section">
-                    <input type="url" id="videoUrlInput" class="form-control video-url-input" placeholder="Paste video URL (MP4, WebM, or streaming URL)">
+                    <input type="url" id="videoUrlInput" class="form-control video-url-input" placeholder="Paste any video URL (YouTube, Vimeo, MP4, WebM, etc.)">
                     <button id="loadVideoBtn" class="btn btn--primary">Load Video</button>
+                </div>
+
+                <!-- Video Source Indicator -->
+                <div class="video-source-indicator">
+                    <span id="videoSourceType" class="status status--info">Direct Video</span>
+                    <span id="videoLoadingIndicator" class="loading-indicator hidden">Loading...</span>
                 </div>
 
                 <!-- Video Player Container -->
                 <div class="video-container">
+                    <!-- HTML5 Video Player -->
                     <video id="mainVideo" class="main-video" controls crossorigin="anonymous">
                         <source src="https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4" type="video/mp4">
                         Your browser does not support the video tag.
                     </video>
+                    
+                    <!-- YouTube Iframe Player -->
+                    <div id="youtubePlayer" class="youtube-player hidden"></div>
+                    
+                    <!-- Vimeo Iframe Player -->
+                    <iframe id="vimeoPlayer" class="vimeo-player hidden" frameborder="0" allow="autoplay; fullscreen; picture-in-picture"></iframe>
                     
                     <!-- Video Chat Overlay -->
                     <div id="videoChatOverlay" class="video-chat-overlay hidden">
@@ -74,6 +87,15 @@
                     <!-- Sync Status Indicator -->
                     <div id="syncIndicator" class="sync-indicator hidden">
                         <span>🔄 Syncing...</span>
+                    </div>
+
+                    <!-- Error Message -->
+                    <div id="videoError" class="video-error hidden">
+                        <div class="error-content">
+                            <h3>Video Error</h3>
+                            <p id="errorMessage">Failed to load video</p>
+                            <button id="retryVideoBtn" class="btn btn--outline">Try Again</button>
+                        </div>
                     </div>
                 </div>
 
@@ -114,7 +136,7 @@
                 <!-- Chat Messages -->
                 <div class="chat-container">
                     <div id="chatMessages" class="chat-messages">
-                        <div class="system-message">Welcome to SyncWatch! Start chatting...</div>
+                        <div class="system-message">Welcome to SyncWatch! Supports YouTube, Vimeo, and direct video files.</div>
                     </div>
                     
                     <!-- Typing Indicator -->
